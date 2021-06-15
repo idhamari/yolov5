@@ -34,6 +34,7 @@ class Detect(nn.Module):
         self.nl = len(anchors)                        # number of detection layers
         self.na = len(anchors[0]) //numPoints        # number of anchors
         self.grid = [torch.zeros(1)] * self.nl       # init grid
+        print("ch    : ", ch) # 2d: [128, 256, 512]  3d:[128, 256, 512]
         print("anchor: ", anchors)
         print("number of classes           : ", nc)        # 80
         print("number of coordinates       : ", numPoints) # 2
@@ -41,14 +42,23 @@ class Detect(nn.Module):
         print("number of detection layers  : ", self.nl)   # 3
         print("number of anchors          : ", self.na)    # 3
         print("grid: ", len(self.grid),len(self.grid[0]),len(self.grid[1]) ) # 3 1 1
-        a = torch.tensor(anchors).float().view(self.nl, -1, 2)
-        print("a: ",  a.shape)  # 3,2,2
+        a = torch.tensor(anchors).float().view(self.nl, -1, numPoints)
+        print("a: ",  a.shape)  # 2d: 3,2,2  or 3d: 3,3,3
         #print(ok)
-        self.register_buffer('anchors', a)  # shape(nl,na,2)
-        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        if numPoints==3:
-           self.m = nn.ModuleList(nn.Conv3d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.register_buffer('anchors', a)  # shape(nl,na,numPoints)
+        self.m = []
+        if numPoints==2:
+            regBuff =  a.clone().view(self.nl, 1, -1, 1, 1, numPoints) # shape(nl,1,na,1,1,2)
+            print("regBuff.shape : ", regBuff.shape)
+            self.register_buffer('anchor_grid', regBuff) # regBuff.shape :  torch.Size([3, 1, 3, 1, 1, 2])
+            self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        else:
+            regBuff =  a.clone().view(self.nl, 1, -1, 1, 1, 1, numPoints) # shape(nl,1,na,1,1,2)
+            print("regBuff.shape : " , regBuff.shape)
+            self.register_buffer('anchor_grid', regBuff)
+            print("ch : ",ch)
+            print(ok)
+            self.m = nn.ModuleList(nn.Conv3d(x, self.no * self.na, 1) for x in ch)  # output conv
 
     def forward(self, x):
         # x = x.copy()  # for profiling
@@ -231,11 +241,15 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
         m = eval(m) if isinstance(m, str) else m  # eval strings
+        print("i f n m :",i,f,n,m)
+        print("-----------------")
         for j, a in enumerate(args):
             try:
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+                print("   j a :",j,a)
             except:
                 pass
+        print("=====================")
 
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
         yolo2Dclasses = [Conv2D, GhostConv2D, GhostBottleneck2D, Bottleneck2D, SPP2D, DWConv2D, MixConv2D,Focus2D, CrossConv, BottleneckCSP2D, C32D, C3TR2D]

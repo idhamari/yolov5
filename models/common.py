@@ -50,9 +50,13 @@ class Conv2D(nn.Module):
         self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
     def forward(self, x):
-        return self.act(self.bn(self.conv(x)))
+        y = self.act(self.bn(self.conv(x)))
+        # print("y.shape : ",y.shape) # y.shape :  torch.Size([1, 32, 128, 128])
+        # print(ok)
+        return y
 
     def fuseforward(self, x):
+
         return self.act(self.conv(x))
 
 class Conv3D(nn.Module):
@@ -68,7 +72,10 @@ class Conv3D(nn.Module):
         self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
     def forward(self, x):
-        return self.act(self.bn(self.conv(x)))
+        y = self.act(self.bn(self.conv(x)))
+        print("y.shape : ",y.shape)
+        print(ok)
+        return y
 
     def fuseforward(self, x):
         return self.act(self.conv(x))
