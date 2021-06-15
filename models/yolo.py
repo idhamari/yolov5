@@ -1,8 +1,4 @@
-"""YOLOv5-specific modules
-
-Usage:
-    $ python path/to/models/yolo.py --cfg yolov5s.yaml
-"""
+# YOLOv5 YOLO-specific modules
 
 import argparse
 import logging
@@ -21,48 +17,55 @@ from utils.torch_utils import time_synchronized, fuse_conv_and_bn, model_info, s
     select_device, copy_attr
 
 try:
-    import thop  # for FLOPs computation
+    import thop  # for FLOPS computation
 except ImportError:
     thop = None
 
 
 class Detect(nn.Module):
     stride = None  # strides computed during build
-    onnx_dynamic = False  # ONNX export parameter
+    export = False  # onnx export
 
-    def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
+    def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
         super(Detect, self).__init__()
-        self.nc = nc  # number of classes
-        self.no = nc + 5  # number of outputs per anchor
-        self.nl = len(anchors)  # number of detection layers
-        self.na = len(anchors[0]) // 2  # number of anchors
-        self.grid = [torch.zeros(1)] * self.nl  # init grid
+        self.nc = nc                                 # number of classes
+        numPoints = 3 if len(anchors[0])==9 else 2   # 2d or 3d
+        self.no = nc + 5 if numPoints==2 else nc +7  # number of outputs per anchor
+        self.nl = len(anchors)                        # number of detection layers
+        self.na = len(anchors[0]) //numPoints        # number of anchors
+        self.grid = [torch.zeros(1)] * self.nl       # init grid
+        print("anchor: ", anchors)
+        print("number of classes           : ", nc)        # 80
+        print("number of coordinates       : ", numPoints) # 2
+        print("number of outputs per anchor: ", self.no)   # 85
+        print("number of detection layers  : ", self.nl)   # 3
+        print("number of anchors          : ", self.na)    # 3
+        print("grid: ", len(self.grid),len(self.grid[0]),len(self.grid[1]) ) # 3 1 1
         a = torch.tensor(anchors).float().view(self.nl, -1, 2)
+        print("a: ",  a.shape)  # 3,2,2
+        #print(ok)
         self.register_buffer('anchors', a)  # shape(nl,na,2)
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.inplace = inplace  # use in-place ops (e.g. slice assignment)
+        if numPoints==3:
+           self.m = nn.ModuleList(nn.Conv3d(x, self.no * self.na, 1) for x in ch)  # output conv
 
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
+        self.training |= self.export
         for i in range(self.nl):
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
-                if self.grid[i].shape[2:4] != x[i].shape[2:4] or self.onnx_dynamic:
+                if self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
 
                 y = x[i].sigmoid()
-                if self.inplace:
-                    y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
-                    xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i].view(1, self.na, 1, 1, 2)  # wh
-                    y = torch.cat((xy, wh, y[..., 4:]), -1)
+                y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
+                y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
                 z.append(y.view(bs, -1, self.no))
 
         return x if self.training else (torch.cat(z, 1), x)
@@ -74,8 +77,11 @@ class Detect(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov5s3D.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
+        #cfg = '/home/ibr/Downloads/YOLOv5_vertebrae/yolov5/models/yolov5s3D.yaml'
+        print("model config path: ", cfg)
+
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
         else:  # is *.yaml
@@ -92,16 +98,19 @@ class Model(nn.Module):
         if anchors:
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
-        self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
-        self.inplace = self.yaml.get('inplace', True)
-        # logger.info([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
+        modelOut = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        print(" modelOut ............................................")
+        print(modelOut)
+        print(" ........ ............................................")
+        self.model, self.save = modelOut
+
+        self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
+        # logger.info([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
         # Build strides, anchors
         m = self.model[-1]  # Detect()
         if isinstance(m, Detect):
             s = 256  # 2x min stride
-            m.inplace = self.inplace
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)
             check_anchor_order(m)
@@ -116,22 +125,23 @@ class Model(nn.Module):
 
     def forward(self, x, augment=False, profile=False):
         if augment:
-            return self.forward_augment(x)  # augmented inference, None
+            img_size = x.shape[-2:]  # height, width
+            s = [1, 0.83, 0.67]  # scales
+            f = [None, 3, None]  # flips (2-ud, 3-lr)
+            y = []  # outputs
+            for si, fi in zip(s, f):
+                xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
+                yi = self.forward_once(xi)[0]  # forward
+                # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
+                yi[..., :4] /= si  # de-scale
+                if fi == 2:
+                    yi[..., 1] = img_size[0] - yi[..., 1]  # de-flip ud
+                elif fi == 3:
+                    yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
+                y.append(yi)
+            return torch.cat(y, 1), None  # augmented inference, train
         else:
             return self.forward_once(x, profile)  # single-scale inference, train
-
-    def forward_augment(self, x):
-        img_size = x.shape[-2:]  # height, width
-        s = [1, 0.83, 0.67]  # scales
-        f = [None, 3, None]  # flips (2-ud, 3-lr)
-        y = []  # outputs
-        for si, fi in zip(s, f):
-            xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
-            yi = self.forward_once(xi)[0]  # forward
-            # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
-            yi = self._descale_pred(yi, fi, si, img_size)
-            y.append(yi)
-        return torch.cat(y, 1), None  # augmented inference, train
 
     def forward_once(self, x, profile=False):
         y, dt = [], []  # outputs
@@ -140,13 +150,13 @@ class Model(nn.Module):
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
 
             if profile:
-                o = thop.profile(m, inputs=(x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPs
+                o = thop.profile(m, inputs=(x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPS
                 t = time_synchronized()
                 for _ in range(10):
                     _ = m(x)
                 dt.append((time_synchronized() - t) * 100)
                 if m == self.model[0]:
-                    logger.info(f"{'time (ms)':>10s} {'GFLOPs':>10s} {'params':>10s}  {'module'}")
+                    logger.info(f"{'time (ms)':>10s} {'GFLOPS':>10s} {'params':>10s}  {'module'}")
                 logger.info(f'{dt[-1]:10.2f} {o:10.2f} {m.np:10.0f}  {m.type}')
 
             x = m(x)  # run
@@ -155,23 +165,6 @@ class Model(nn.Module):
         if profile:
             logger.info('%.1fms total' % sum(dt))
         return x
-
-    def _descale_pred(self, p, flips, scale, img_size):
-        # de-scale predictions following augmented inference (inverse operation)
-        if self.inplace:
-            p[..., :4] /= scale  # de-scale
-            if flips == 2:
-                p[..., 1] = img_size[0] - p[..., 1]  # de-flip ud
-            elif flips == 3:
-                p[..., 0] = img_size[1] - p[..., 0]  # de-flip lr
-        else:
-            x, y, wh = p[..., 0:1] / scale, p[..., 1:2] / scale, p[..., 2:4] / scale  # de-scale
-            if flips == 2:
-                y = img_size[0] - y  # de-flip ud
-            elif flips == 3:
-                x = img_size[1] - x  # de-flip lr
-            p = torch.cat((x, y, wh, p[..., 4:]), -1)
-        return p
 
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
         # https://arxiv.org/abs/1708.02002 section 3.3
@@ -188,14 +181,14 @@ class Model(nn.Module):
         for mi in m.m:  # from
             b = mi.bias.detach().view(m.na, -1).T  # conv.bias(255) to (3,85)
             logger.info(
-                ('%6g Conv2d.bias:' + '%10.3g' * 6) % (mi.weight.shape[1], *b[:5].mean(1).tolist(), b[5:].mean()))
+                ('%6g Conv3d.bias:' + '%10.3g' * 6) % (mi.weight.shape[1], *b[:5].mean(1).tolist(), b[5:].mean()))
 
     # def _print_weights(self):
     #     for m in self.model.modules():
     #         if type(m) is Bottleneck:
     #             logger.info('%10.3g' % (m.w.detach().sigmoid() * 2))  # shortcut weights
 
-    def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
+    def fuse(self):  # fuse model Conv3d() + BatchNorm3d() layers
         logger.info('Fusing layers... ')
         for m in self.model.modules():
             if type(m) is Conv and hasattr(m, 'bn'):
@@ -219,9 +212,9 @@ class Model(nn.Module):
             self.model = self.model[:-1]  # remove
         return self
 
-    def autoshape(self):  # add AutoShape module
-        logger.info('Adding AutoShape... ')
-        m = AutoShape(self)  # wrap model
+    def autoshape(self):  # add autoShape module
+        logger.info('Adding autoShape... ')
+        m = autoShape(self)  # wrap model
         copy_attr(m, self, include=('yaml', 'nc', 'hyp', 'names', 'stride'), exclude=())  # copy attributes
         return m
 
@@ -233,7 +226,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+    no = na * (nc + 7)  # number of outputs = anchors * (classes + 7)
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
@@ -245,17 +238,19 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 pass
 
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP,
-                 C3, C3TR]:
+        yolo2Dclasses = [Conv2D, GhostConv2D, GhostBottleneck2D, Bottleneck2D, SPP2D, DWConv2D, MixConv2D,Focus2D, CrossConv, BottleneckCSP2D, C32D, C3TR2D]
+        yolo3Dclasses = [Conv3D, GhostConv3D, GhostBottleneck3D, Bottleneck3D, SPP3D, DWConv3D, MixConv3D,Focus3D, CrossConv, BottleneckCSP3D, C33D, C3TR3D]
+        yolo2d3dClasses = list(set(yolo2Dclasses) | set(yolo3Dclasses))
+        if m in yolo2d3dClasses:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, 8)
 
             args = [c1, c2, *args[1:]]
-            if m in [BottleneckCSP, C3, C3TR]:
+            if m in [BottleneckCSP2D, C32D, C3TR2D, BottleneckCSP3D, C33D, C3TR3D]:
                 args.insert(2, n)  # number of repeats
                 n = 1
-        elif m is nn.BatchNorm2d:
+        elif m in [nn.BatchNorm2d,nn.BatchNorm3d]:
             args = [ch[f]]
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
@@ -263,9 +258,9 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
-        elif m is Contract:
+        elif m  in [Contract2D,Contract3D]:
             c2 = ch[f] * args[0] ** 2
-        elif m is Expand:
+        elif m in [Expand2D,Expand3D]:
             c2 = ch[f] // args[0] ** 2
         else:
             c2 = ch[f]
@@ -277,18 +272,25 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
         layers.append(m_)
+
         if i == 0:
             ch = []
         ch.append(c2)
-    return nn.Sequential(*layers), sorted(save)
+        outModel = nn.Sequential(*layers), sorted(save)
+    return outModel
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='yolov5s.yaml', help='model.yaml')
+    parser.add_argument('--cfg', type=str, default='yolov5s3D.yaml', help='model.yaml')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     opt = parser.parse_args()
     opt.cfg = check_file(opt.cfg)  # check file
+
+    print("yolo opt: .......................")
+    print(opt)
+    print(".................................")
+
     set_logging()
     device = select_device(opt.device)
 

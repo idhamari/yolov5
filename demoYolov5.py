@@ -47,5 +47,12 @@ print(f"Setup complete. Using torch {torch.__version__} ({torch.cuda.get_device_
 #wandb.login()
 
 # #Train YOLOv5s on COCO128 for 3 epochs
-os.system('python3 train.py --img 640 --batch 16 --epochs 3 --data coco128.yaml --weights yolov5s.pt --cache --device 1')
+os.system('python3 train.py --img 640 --batch 16 --epochs 3 --numChannels 3 --data coco128.yaml  --cfg "yolov5s.yaml" --weights yolov5s.pt --fromScratch 1 --cache --device 1')
+# notes:
+#  69 3d volumes of 256,256,128: only 10 used
+#  69 txt files : only 10 used
+#  28 classes without background
+#  smallest approximate size: 80,70,20
+#os.system('python3 train.py  --epochs 3 --numChannels 1 --data data/spine3d/spine3d.yaml --cfg "yolov5s3D.yaml" --fromScratch 1 --cache --device 1')
+
 #
