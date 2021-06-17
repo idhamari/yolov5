@@ -415,29 +415,35 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # print("len self.img_files : ",len(self.img_files)) # 128 images with different sizes
         # print("self.img_files 0: ", (self.img_files[0]))   #   ../coco128/images/train2017/000000000009.jpg
-        # print(ok)
-        # Check cache
+
+        print("----------- Check cache ---------------")
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
         if cache_path.is_file():
+            print("cache is found .....",cache_path )
             cache, exists = torch.load(cache_path), True  # load
             if cache['hash'] != get_hash(self.label_files + self.img_files):  # changed
                 cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
         else:
+            print("cache is not found .....")
             cache, exists = self.cache_labels(cache_path, prefix), False  # cache
         # Display cache
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupted, total
+        print("nf : ", nf)
         if exists:
             d = f"Scanning '{cache_path}' images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
             tqdm(None, desc=prefix + d, total=n, initial=n)  # display cache results
-            
+
         assert nf > 0 or not augment, f'{prefix}No labels in {cache_path}. Can not train without labels. See {help_url}'
 
         # Read cache
         cache.pop('hash')  # remove hash
         cache.pop('version')  # remove version
         labels, shapes, self.segments = zip(*cache.values())
+        # todo: read label files and store them in a list
+        #       create shapes list
         self.labels = list(labels)
+
         self.shapes = np.array(shapes, dtype=np.float64)
         self.img_files = list(cache.keys())  # update
         self.label_files = img2label_paths(cache.keys())  # update
@@ -445,20 +451,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             for x in self.labels:
                 x[:, 0] = 0
 
-        n = len(shapes)  # number of images
+        # n = len(shapes)  # number of images
+        n = len( self.img_files)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
         self.indices = range(n)
 
-        print("nnnnnnn")
-        print("n = ", n )     # 128
-        print("nb = ", nb )   # 8
-        #print("bi = ", bi )     # 128
-        print("batch_size = ", batch_size )     # 128
-
-        #print(ok)
         # Rectangular Training
         if self.rect:
             # Sort by aspect ratio
@@ -508,6 +508,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
        #print(ok)
 
     def cache_labels(self, path=Path('./labels.cache'), prefix=''):
+        print("def cache_labels ------------------------")
         # Cache dataset labels, check images and read shapes
         x = {}  # dict
         nm, nf, ne, nc = 0, 0, 0, 0  # number missing, found, empty, duplicate
@@ -515,13 +516,19 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         for i, (im_file, lb_file) in enumerate(pbar):
             try:
                 # verify images
-                im = Image.open(im_file)
-                im.verify()  # PIL verify
-                shape = exif_size(im)  # image size
+                print("im_file : " , im_file)
+                print("lb_file : " , lb_file)
+
+                if not 'nrrd' in im_file:
+                   im = Image.open(im_file)
+                   im.verify()  # PIL verify
+                   shape = exif_size(im)  # image size
+                   assert im.format.lower() in img_formats, f'invalid image format {im.format}'
+                else:
+                    im = sitk.GetArrayFromImage(sitk.ReadImage(im_file))
+                    shape = im.shape
                 segments = []  # instance segments
                 assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
-                assert im.format.lower() in img_formats, f'invalid image format {im.format}'
-
                 # verify labels
                 if os.path.isfile(lb_file):
                     nf += 1  # label found
@@ -533,16 +540,27 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
                         l = np.array(l, dtype=np.float32)
                     if len(l):
-                        assert l.shape[1] == 5, 'labels require 5 columns each'
+                        if not 'nrrd' in im_file:
+                            assert l.shape[1] == 5, 'labels require 5 columns each'
+                        else:
+                            assert l.shape[1] == 7, 'labels require 5 columns each'
                         assert (l >= 0).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                     else:
                         ne += 1  # label empty
-                        l = np.zeros((0, 5), dtype=np.float32)
+                        if not 'nrrd' in im_file:
+                            l = np.zeros((0, 5), dtype=np.float32)
+                        else:
+                            l = np.zeros((0, 7), dtype=np.float32)
                 else:
                     nm += 1  # label missing
-                    l = np.zeros((0, 5), dtype=np.float32)
+                    if not 'nrrd' in im_file:
+                        l = np.zeros((0, 5), dtype=np.float32)
+                    else:
+                        l = np.zeros((0, 7), dtype=np.float32)
+
+                #print("[l, shape, segments] : ",[l, shape, segments])
                 x[im_file] = [l, shape, segments]
             except Exception as e:
                 nc += 1
@@ -598,19 +616,25 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # print("  __getitem__ LoadImagesAndLabels" )
             if not 'nrrd' in path:
                 img, (h0, w0), (h, w) = load_image(self, index)
+                # Letterbox
+                shape = self.batch_shapes[
+                    self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+
+                labels = self.labels[index].copy()
+                if labels.size:  # normalized xywh to pixel xyxy format
+                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
             else:
                 img, (h0, w0, d0), (h, w, d) = load_3d_image(self, index)
-            # print("img.shape : ", img.shape)
-            # print("h0 w0 : ", h0,w0)
-            # print("h  w  : ", h,w)
-            # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-            shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+                # Letterbox
+                shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                pad = (0,0,0)
+                shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
-            labels = self.labels[index].copy()
-            if labels.size:  # normalized xywh to pixel xyxy format
-                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+                labels = self.labels[index].copy()
+                if labels.size:  # normalized xywh to pixel xyxy format
+                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 
         if self.augment:
             # Augment imagespace
@@ -661,6 +685,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # #print(labels_out)
         # print("self.img_files[index].  : ", self.img_files[index])
         # print("shapes.shape : ", shapes) # ((480, 640), ((1.0, 1.0), (0.0, 80.0)))
+        # print(ok)
         out = torch.from_numpy(img), labels_out, self.img_files[index], shapes
         return out
 
