@@ -115,8 +115,9 @@ def train(hyp, opt, device, tb_writer=None ):
         model = Model(opt.cfg, ch=numChannels, nc=nc, anchors=hyp.get('anchors'),numPoints=opt.numPoints).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
+
     train_path = data_dict['train']
-    test_path = data_dict['val']
+    test_path  = data_dict['val']
 
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
@@ -127,24 +128,39 @@ def train(hyp, opt, device, tb_writer=None ):
             v.requires_grad = False
 
     # Optimizer
-    nbs = 64  # nominal batch size
+    nbs = 1 #64  # nominal batch size
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
     logger.info(f"Scaled weight_decay = {hyp['weight_decay']}")
 
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
-    for k, v in model.named_modules():
+    #print("len  model.named_modules() : ", len(model.named_modules()) )
+    lenM = 1
+    for k, v in model.named_modules(): # 284
+        # we loop through model layers
+        # print("mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm")
         if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):
             pg2.append(v.bias)  # biases
-        if isinstance(v, nn.BatchNorm2d):
-            pg0.append(v.weight)  # no decay
-        elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
-            pg1.append(v.weight)  # apply decay
+            # print("v.bias : ", v.bias)
+        if opt.numPoints==2:
+            if isinstance(v, nn.BatchNorm2d):
+                pg0.append(v.weight)  # no decay
+                # print("pg0 v.weight : ", v.weight)
+            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
+                pg1.append(v.weight)  # apply decay
+                # print("pg1 v.weight : ", v.weight)
+        else:
+            if isinstance(v, nn.BatchNorm3d):
+                pg0.append(v.weight)  # no decay
+                # print("pg0 v.weight : ", v.weight)
+            elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
+                pg1.append(v.weight)  # apply decay
+                # print("pg1 v.weight : ", v.weight)
 
     if opt.adam:
         optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
-        optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        optimizer  = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
