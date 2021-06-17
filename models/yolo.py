@@ -43,51 +43,82 @@ class Detect(nn.Module):
         print("number of anchors          : ", self.na)    # 3
         print("grid: ", len(self.grid),len(self.grid[0]),len(self.grid[1]) ) # 3 1 1
         a = torch.tensor(anchors).float().view(self.nl, -1, numPoints)
-        print("a: ",  a.shape)  # 2d: 3,2,2  or 3d: 3,3,3
+        print("a: ",  a.shape)  # 2d: 3,3,2  or 3d: 3,3,3
         #print(ok)
         self.register_buffer('anchors', a)  # shape(nl,na,numPoints)
         self.m = []
         if numPoints==2:
-            regBuff =  a.clone().view(self.nl, 1, -1, 1, 1, numPoints) # shape(nl,1,na,1,1,2)
-            print("regBuff.shape : ", regBuff.shape)
+            viewPars = [self.nl, 1, -1, 1, 1, numPoints]
+            regBuff =  a.clone().view(viewPars) # shape(nl,1,na,1,1,2)
+            print("viewPars : " , viewPars)           # [3, 1, -1, 1, 1, 2]
+            print("regBuff.shape : ", regBuff.shape)  # [3, 1,  3, 1, 1, 2]
             self.register_buffer('anchor_grid', regBuff) # regBuff.shape :  torch.Size([3, 1, 3, 1, 1, 2])
             self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
         else:
-            regBuff =  a.clone().view(self.nl, 1, -1, 1, 1, 1, numPoints) # shape(nl,1,na,1,1,2)
-            print("regBuff.shape : " , regBuff.shape)
+            viewPars = [self.nl, 1, -1,1, 1, 1, numPoints]
+            regBuff =  a.clone().view(viewPars) # shape(nl,1,na,1,1,2)
+            print("viewPars : " , viewPars)                 # [3, 1, -1, 1, 1, 1, 3]
+            print("regBuff.shape : " , regBuff.shape)       # [3, 1, 3,  1, 1, 1, 3]
             self.register_buffer('anchor_grid', regBuff)
             print("ch : ",ch)
-            print(ok)
             self.m = nn.ModuleList(nn.Conv3d(x, self.no * self.na, 1) for x in ch)  # output conv
-
+        #print(ok)
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
+        # print("x.shape : ", len(x) )      # 2d: 3
+        # print("x.shape : ", (x[0].shape)) # 2d: torch.Size([1, 128, 32, 32])
+        # print("x.shape : ", (x[1].shape)) # 2d: torch.Size([1, 256, 16, 16])
+        # print("x.shape : ", (x[2].shape)) # 2d: torch.Size([1, 512, 8, 8])
+        # print(ok)
+        is2D = 1 if len(list(x[0].shape)) == 4 else 0
         for i in range(self.nl):
             x[i] = self.m[i](x[i])  # conv
-            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            # print("len(list(x[i].shape)) ................", len(list(x[i].shape)))
+            # print("(x[i].shape) ................", x[i].shape)
+            # print(ok)
+            if is2D:
+               bs, _, ny, nx = x[i].shape       # x(bs,255,20,20) to x(bs,3,20,20,85)
+               x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            else:
+                bs, _, ny, nx, nz = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+                x[i] = x[i].view(bs, self.na, self.no, ny, nx,nz).permute(0, 1, 3, 4,5, 2).contiguous()
+
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
-                    self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
+                    if is2D:
+                        self.grid[i] = self._make_grid2D(nx, ny).to(x[i].device)
+                    else:
+                        self.grid[i] = self._make_grid3D(nx, ny, nz).to(x[i].device)
 
                 y = x[i].sigmoid()
                 y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]              # wh
                 z.append(y.view(bs, -1, self.no))
-
-        return x if self.training else (torch.cat(z, 1), x)
+        out = x if self.training else (torch.cat(z, 1), x)
+        # print("forwardout.shape : ",len(out) ) # 3 for 3d
+        return out
 
     @staticmethod
-    def _make_grid(nx=20, ny=20):
+    #this is generated during the training
+    def _make_grid2D(nx=20, ny=20):
         yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
-        return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
+        out = torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
+        #print("_make_grid2D out.shape : ",(out.shape) ) # 2d: torch.Size([1, 1, 56, 84, 2])
+        return out
 
+    @staticmethod
+    #this is generated during the training
+    def _make_grid3D(nx=20, ny=20, nz=20):
+        yv, xv,zv = torch.meshgrid([torch.arange(ny), torch.arange(nx),torch.arange(nz)])
+        out = torch.stack((xv, yv, zv), 3).view((1, 1, ny, nx,nz, 3)).float()
+        print("_make_grid3D out.shape : ",(out.shape) ) # 2d: torch.Size([1, 1, 56, 84, 2])
+        return out
 
 class Model(nn.Module):
-    def __init__(self, cfg='yolov5s3D.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov5s3D.yaml', ch=3, nc=None, anchors=None,numPoints=2):  # model, input channels, number of classes
         super(Model, self).__init__()
         #cfg = '/home/ibr/Downloads/YOLOv5_vertebrae/yolov5/models/yolov5s3D.yaml'
         print("model config path: ", cfg)
@@ -109,10 +140,12 @@ class Model(nn.Module):
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
 
-        modelOut = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+
+        modelOut = parse_model(deepcopy(self.yaml), ch=[ch], numPoints=2)  # model, savelist
         print(" modelOut ............................................")
         print(modelOut)
         print(" ........ ............................................")
+
         self.model, self.save = modelOut
 
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
@@ -121,7 +154,11 @@ class Model(nn.Module):
         m = self.model[-1]  # Detect()
         if isinstance(m, Detect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            if numPoints == 2:  # for 2D
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            else:  # for 3D
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s, s))])  # forward
+
             m.anchors /= m.stride.view(-1, 1, 1)
             check_anchor_order(m)
             self.stride = m.stride
@@ -134,6 +171,9 @@ class Model(nn.Module):
         logger.info('')
 
     def forward(self, x, augment=False, profile=False):
+        # print("model forward   x ", len(x))      #2d :1
+        # print("model forward   x ", x[0].shape)  #2d : torch.Size([3, 256, 256])
+
         if augment:
             img_size = x.shape[-2:]  # height, width
             s = [1, 0.83, 0.67]  # scales
@@ -149,11 +189,20 @@ class Model(nn.Module):
                 elif fi == 3:
                     yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
                 y.append(yi)
-            return torch.cat(y, 1), None  # augmented inference, train
+            out =  torch.cat(y, 1), None  # augmented inference, train
         else:
-            return self.forward_once(x, profile)  # single-scale inference, train
+            out = self.forward_once(x, profile)  # single-scale inference, train
+
+        # print("model forward out",  len(out))       #2d :3
+        # print("model forward  out ", out[0].shape)  #2d : torch.Size([1, 3, 32, 32, 85]
+        # print("model forward  out ", out[1].shape)  #2d : torch.Size([1, 3, 16, 16, 85])
+        # print("model forward  out ", out[2].shape)  #2d : torch.Size([1, 3,  8,  8, 85])
+        # print(ok)
+        return out
 
     def forward_once(self, x, profile=False):
+        # print("model forward_once   x ", len(x))      #2d :1
+        # print("model forward_once   x ", x[0].shape)  #2d : torch.Size([3, 256, 256])
         y, dt = [], []  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
@@ -174,6 +223,11 @@ class Model(nn.Module):
 
         if profile:
             logger.info('%.1fms total' % sum(dt))
+        # print("model forward_once   x ", len(x))      #2d :3
+        # print("model forward_once   x ", x[0].shape)  #2d : torch.Size([1, 3, 32, 32, 85])
+        # print("model forward_once   x ", x[1].shape)  #2d : torch.Size([1, 3, 16, 16, 85])
+        # print("model forward_once   x ", x[2].shape)  #2d : torch.Size([1, 3,  8,  8, 85])
+
         return x
 
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
@@ -232,26 +286,32 @@ class Model(nn.Module):
         model_info(self, verbose, img_size)
 
 
-def parse_model(d, ch):  # model_dict, input_channels(3)
+def parse_model(d, ch,numPoints=2):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
-    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc + 7)  # number of outputs = anchors * (classes + 7)
+
+    na = (len(anchors[0]) // numPoints) if isinstance(anchors, list) else anchors  # number of anchors
+    no = na * (nc + 5) if numPoints == 2 else na * (nc + 7)  # number of outputs = anchors * (classes + 5 or 7)
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+        # print("-----------------")
+        # print("i :",i)
+        # print("f :",f)
+        # print("n :",n)
+        # print("m :",m)
+        # print("-----------------")
         m = eval(m) if isinstance(m, str) else m  # eval strings
-        print("i f n m :",i,f,n,m)
-        print("-----------------")
         for j, a in enumerate(args):
             try:
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-                print("   j a :",j,a)
+                # print("   j a :",j,a)
             except:
                 pass
-        print("=====================")
-
+        # print("=====================")
+        # gd: depth_multiple
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+
         yolo2Dclasses = [Conv2D, GhostConv2D, GhostBottleneck2D, Bottleneck2D, SPP2D, DWConv2D, MixConv2D,Focus2D, CrossConv, BottleneckCSP2D, C32D, C3TR2D]
         yolo3Dclasses = [Conv3D, GhostConv3D, GhostBottleneck3D, Bottleneck3D, SPP3D, DWConv3D, MixConv3D,Focus3D, CrossConv, BottleneckCSP3D, C33D, C3TR3D]
         yolo2d3dClasses = list(set(yolo2Dclasses) | set(yolo3Dclasses))

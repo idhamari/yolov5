@@ -15,11 +15,12 @@ from threading import Thread
 
 import cv2
 import numpy as np
+import SimpleITK as sitk
 import torch
 import torch.nn.functional as F
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
-from tqdm import tqdm
+from tqdm import tqdm # progress bar
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
@@ -60,8 +61,11 @@ def exif_size(img):
     return s
 
 
+# This is called from train.py
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
                       rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+    print("create_dataloader ....................")
+    # print(ok)
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -74,6 +78,7 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       pad=pad,
                                       image_weights=image_weights,
                                       prefix=prefix)
+
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -99,6 +104,8 @@ class InfiniteDataLoader(torch.utils.data.dataloader.DataLoader):
         super().__init__(*args, **kwargs)
         object.__setattr__(self, 'batch_sampler', _RepeatSampler(self.batch_sampler))
         self.iterator = super().__iter__()
+        print("InfiniteDataLoader .......................................")
+        # print(ok)
 
     def __len__(self):
         return len(self.batch_sampler.sampler)
@@ -117,6 +124,8 @@ class _RepeatSampler(object):
 
     def __init__(self, sampler):
         self.sampler = sampler
+        print("_RepeatSampler .......................................")
+        #print(ok)
 
     def __iter__(self):
         while True:
@@ -125,6 +134,9 @@ class _RepeatSampler(object):
 
 class LoadImages:  # for inference
     def __init__(self, path, img_size=640, stride=32):
+        print("LoadImages .......................................")
+        print(ok)
+
         p = str(Path(path).absolute())  # os-agnostic absolute path
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
@@ -180,6 +192,8 @@ class LoadImages:  # for inference
 
         else:
             # Read image
+            print("LoadImages __next__ ..................." )
+            print(ok)
             self.count += 1
             img0 = cv2.imread(path)  # BGR
             assert img0 is not None, 'Image Not Found ' + path
@@ -205,6 +219,9 @@ class LoadImages:  # for inference
 
 class LoadWebcam:  # for inference
     def __init__(self, pipe='0', img_size=640, stride=32):
+        print("LoadWebcam .......................................")
+        print(ok)
+
         self.img_size = img_size
         self.stride = stride
 
@@ -263,6 +280,9 @@ class LoadWebcam:  # for inference
 
 class LoadStreams:  # multiple IP or RTSP cameras
     def __init__(self, sources='streams.txt', img_size=640, stride=32):
+        print("LoadStreams .......................................")
+        print(ok)
+
         self.mode = 'stream'
         self.img_size = img_size
         self.stride = stride
@@ -351,12 +371,20 @@ def img2label_paths(img_paths):
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
+        print("LoadImagesAndLabels .......................................")
+        # print(ok)
         self.img_size = img_size
-        self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
-        self.rect = False if image_weights else rect
-        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+
+        # self.augment = augment
+        # self.rect = False if image_weights else rect
+        #self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.augment = 0
+        self.mosaic  = 0
+        cache_images = 0
+        self.rect    = 0
+
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path
@@ -382,6 +410,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         except Exception as e:
             raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
 
+        # print("len self.img_files : ",len(self.img_files)) # 128 images with different sizes
+        # print("self.img_files 0: ", (self.img_files[0]))   #   ../coco128/images/train2017/000000000009.jpg
+        # print(ok)
         # Check cache
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
@@ -418,6 +449,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.n = n
         self.indices = range(n)
 
+        print("nnnnnnn")
+        print("n = ", n )     # 128
+        print("nb = ", nb )   # 8
+        #print("bi = ", bi )     # 128
+        print("batch_size = ", batch_size )     # 128
+
+        #print(ok)
         # Rectangular Training
         if self.rect:
             # Sort by aspect ratio
@@ -444,16 +482,27 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
+
+
         if cache_images:
             gb = 0  # Gigabytes of cached images
             self.img_hw0, self.img_hw = [None] * n, [None] * n
-            results = ThreadPool(8).imap(lambda x: load_image(*x), zip(repeat(self), range(n)))  # 8 threads
+            #create 8 threads of the same class
+            #results = ThreadPool(8).imap(lambda x: load_image(*x), zip(repeat(self), range(n)))  # 8 threads
+            results = ThreadPool(1).imap(lambda x: load_image(*x), zip(repeat(self), range(1)))  # 8 threads
+            #print("results : ", len(list(results)))
+            # print(ok)
             pbar = tqdm(enumerate(results), total=n)
             for i, x in pbar:
                 self.imgs[i], self.img_hw0[i], self.img_hw[i] = x  # img, hw_original, hw_resized = load_image(self, i)
                 gb += self.imgs[i].nbytes
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
+        # for i in range(len(self.imgs)):
+        #     print("  self.imgs[i] : ", i, self.imgs[i].shape, self.img_hw0[i], self.img_hw[i])
+
+       #print("  pbar : ",  len(pbar))
+       #print(ok)
 
     def cache_labels(self, path=Path('./labels.cache'), prefix=''):
         # Cache dataset labels, check images and read shapes
@@ -527,22 +576,30 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp['mosaic']
+        path = self.img_files[index]
+        # print("img.path : ", path)
+        # if 'nrrd' in path:
+        #     mosaic = 0
         if mosaic:
             # Load mosaic
             img, labels = load_mosaic(self, index)
             shapes = None
-
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 img2, labels2 = load_mosaic(self, random.randint(0, self.n - 1))
                 r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
                 img = (img * r + img2 * (1 - r)).astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
-
         else:
             # Load image
-            img, (h0, w0), (h, w) = load_image(self, index)
-
+            # print("  __getitem__ LoadImagesAndLabels" )
+            if not 'nrrd' in path:
+                img, (h0, w0), (h, w) = load_image(self, index)
+            else:
+                img, (h0, w0, d0), (h, w, d) = load_3d_image(self, index)
+            # print("img.shape : ", img.shape)
+            # print("h0 w0 : ", h0,w0)
+            # print("h  w  : ", h,w)
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
@@ -571,7 +628,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         nL = len(labels)  # number of labels
         if nL:
-            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
+            labels[:, 1:5]     = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
             labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
             labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
 
@@ -596,7 +653,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
 
-        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+        # print("img.shape : ", img.shape) # (3, 640, 640) # resized image to have iso size
+        # print("labels_out.shape : ", labels_out.shape)   # torch.Size([8, 6]) 8 is the number of objects,  6 is: index, label,cx,cy,h,w
+        # #print(labels_out)
+        # print("self.img_files[index].  : ", self.img_files[index])
+        # print("shapes.shape : ", shapes) # ((480, 640), ((1.0, 1.0), (0.0, 80.0)))
+        out = torch.from_numpy(img), labels_out, self.img_files[index], shapes
+        return out
 
     @staticmethod
     def collate_fn(batch):
@@ -645,9 +708,20 @@ def load_image(self, index):
         if r != 1:  # if sizes are not equal
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)),
                              interpolation=cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR)
-        return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
+        out =  img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
-        return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
+        out = self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
+
+    # print("xxxxxxxxxxxxxxxxxxxxxx")
+    # print("imgA : ", out[0].shape)
+    # print("xxxxxxxxxxxxxxxxxxxxxx")
+    return out
+
+def load_3d_image(self, index):
+    img  = sitk.GetArrayFromImage(sitk.ReadImage( self.img_files[index]))
+    h,w,d = img.shape
+    out = img, (h, w, d), (h, w, d)
+    return out
 
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
@@ -1069,3 +1143,18 @@ def autosplit(path='../coco128', weights=(0.9, 0.1, 0.0), annotated_only=False):
         if not annotated_only or Path(img2label_paths([str(img)])[0]).exists():  # check label
             with open(path / txt[i], 'a') as f:
                 f.write(str(img) + '\n')  # add image to txt file
+
+def img2Tensor(imgPath):
+    img  = sitk.ReadImage(imgPath)
+    imgA = sitk.GetArrayFromImage(img)
+    imgA5D= imgA[np.newaxis,np.newaxis,...]
+    imgT = torch.from_numpy(img5D)
+    return imgT
+
+def tensor2Img(imgT,refPath):
+    ref    = sitk.ReadImage(refPath)
+    imgA5D = imgT.numpy()
+    imgA= np.squeeze(imgA5D)
+    img = sitk.GetImageFromArray(imgA)
+    # get properties from ref
+    return img

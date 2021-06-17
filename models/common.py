@@ -73,8 +73,7 @@ class Conv3D(nn.Module):
 
     def forward(self, x):
         y = self.act(self.bn(self.conv(x)))
-        print("y.shape : ",y.shape)
-        print(ok)
+        # print("y.shape : ",y.shape)
         return y
 
     def fuseforward(self, x):

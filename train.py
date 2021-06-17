@@ -91,7 +91,8 @@ def train(hyp, opt, device, tb_writer=None ):
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
     is_coco = opt.data.endswith('coco.yaml') and nc == 80  # COCO dataset
-
+    volumeSize = [opt.szX,opt.szY,opt.szZ]
+    print("volumeSize : " , volumeSize)
     # Model
     pretrained = weights.endswith('.pt')
     ckpt = {'optimizer':None,'epoch':0}
@@ -111,7 +112,7 @@ def train(hyp, opt, device, tb_writer=None ):
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
         print("creating the model from scratch ..................... ")
-        model = Model(opt.cfg, ch=numChannels, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg, ch=numChannels, nc=nc, anchors=hyp.get('anchors'),numPoints=opt.numPoints).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
@@ -209,12 +210,20 @@ def train(hyp, opt, device, tb_writer=None ):
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
+    #out = torch.from_numpy(img), labels_out, self.img_files[index], shapes
+    # print("dataset ",len(dataset))  # 128
+    # print("dataset ",(dataset[0][0].shape)) # image
+    # print("dataset ",(dataset[0][1].shape)) # labels
+    # print("dataset ",(dataset[0][2]))       # path
+    # print("dataset ",(dataset[0][3].shape)) # shape
+    # print(ok)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
     if rank in [-1, 0]:
+        print(" rank in [-1, 0] ....................")
         testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
@@ -231,7 +240,10 @@ def train(hyp, opt, device, tb_writer=None ):
                     tb_writer.add_histogram('classes', c, 0)
 
             # Anchors
+            opt.noautoanchor = 1
             if not opt.noautoanchor:
+                print(" not opt.noautoanchor ....................")
+                print(ok)
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
 
@@ -246,9 +258,9 @@ def train(hyp, opt, device, tb_writer=None ):
     hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers
     hyp['obj'] *= (imgsz / 640) ** 2 * 3. / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
-    model.nc = nc  # attach number of classes to model
-    model.hyp = hyp  # attach hyperparameters to model
-    model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
+    model.nc = nc     # attach number of classes to model
+    model.hyp = hyp   # attach hyperparameters to model
+    model.gr = 1.0    # iou loss ratio (obj_loss = 1.0 or iou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
 
@@ -265,15 +277,18 @@ def train(hyp, opt, device, tb_writer=None ):
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
                 f'Starting training for {epochs} epochs...')
+    print()
+    print("=================================")
+    print("         Start Training         ")
+    print("=================================")
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
             if rank in [-1, 0]:
-                cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
-                iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
+                cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc                # class weights
+                iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)        # image weights
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
             # Broadcast if DDP
             if rank != -1:
@@ -346,16 +361,16 @@ def train(hyp, opt, device, tb_writer=None ):
                 pbar.set_description(s)
 
                 # Plot
-                if plots and ni < 3:
-                    f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
-                    if tb_writer and ni == 0:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter('ignore')  # suppress jit trace warning
-                            tb_writer.add_graph(torch.jit.trace(de_parallel(model), imgs, strict=False), [])  # graph
-                elif plots and ni == 10 and wandb_logger.wandb:
-                    wandb_logger.log({'Mosaics': [wandb_logger.wandb.Image(str(x), caption=x.name) for x in
-                                                  save_dir.glob('train*.jpg') if x.exists()]})
+                # if plots and ni < 3:
+                #     f = save_dir / f'train_batch{ni}.jpg'  # filename
+                #     Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+                #     if tb_writer and ni == 0:
+                #         with warnings.catch_warnings():
+                #             warnings.simplefilter('ignore')  # suppress jit trace warning
+                #             tb_writer.add_graph(torch.jit.trace(de_parallel(model), imgs, strict=False), [])  # graph
+                # elif plots and ni == 10 and wandb_logger.wandb:
+                #     wandb_logger.log({'Mosaics': [wandb_logger.wandb.Image(str(x), caption=x.name) for x in
+                #                                   save_dir.glob('train*.jpg') if x.exists()]})
 
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
@@ -370,7 +385,7 @@ def train(hyp, opt, device, tb_writer=None ):
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
             if not opt.notest or final_epoch:  # Calculate mAP
-                wandb_logger.current_epoch = epoch + 1
+                # wandb_logger.current_epoch = epoch + 1
                 results, maps, times = test.test(data_dict,
                                                  batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
@@ -397,14 +412,14 @@ def train(hyp, opt, device, tb_writer=None ):
             for x, tag in zip(list(mloss[:-1]) + list(results) + lr, tags):
                 if tb_writer:
                     tb_writer.add_scalar(tag, x, epoch)  # tensorboard
-                if wandb_logger.wandb:
-                    wandb_logger.log({tag: x})  # W&B
+                # if wandb_logger.wandb:
+                #     wandb_logger.log({tag: x})  # W&B
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
-            wandb_logger.end_epoch(best_result=best_fitness == fi)
+            # wandb_logger.end_epoch(best_result=best_fitness == fi)
 
             # Save model
             if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
@@ -414,62 +429,64 @@ def train(hyp, opt, device, tb_writer=None ):
                         'model': deepcopy(de_parallel(model)).half(),
                         'ema': deepcopy(ema.ema).half(),
                         'updates': ema.updates,
-                        'optimizer': optimizer.state_dict(),
-                        'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
+                        'optimizer': optimizer.state_dict()}
+                      # ,'wandb_id': wandb_logger.wandb_run.id if wandb_logger.wandb else None}
 
                 # Save last, best and delete
                 torch.save(ckpt, last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
-                if wandb_logger.wandb:
-                    if ((epoch + 1) % opt.save_period == 0 and not final_epoch) and opt.save_period != -1:
-                        wandb_logger.log_model(
-                            last.parent, opt, epoch, fi, best_model=best_fitness == fi)
+                # if wandb_logger.wandb:
+                #     if ((epoch + 1) % opt.save_period == 0 and not final_epoch) and opt.save_period != -1:
+                #         wandb_logger.log_model(
+                #             last.parent, opt, epoch, fi, best_model=best_fitness == fi)
                 del ckpt
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
-    if rank in [-1, 0]:
-        logger.info(f'{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.\n')
-        if plots:
-            plot_results(save_dir=save_dir)  # save as results.png
-            if wandb_logger.wandb:
-                files = ['results.png', 'confusion_matrix.png', *[f'{x}_curve.png' for x in ('F1', 'PR', 'P', 'R')]]
-                wandb_logger.log({"Results": [wandb_logger.wandb.Image(str(save_dir / f), caption=f) for f in files
-                                              if (save_dir / f).exists()]})
-
-        if not opt.evolve:
-            if is_coco:  # COCO dataset
-                for m in [last, best] if best.exists() else [last]:  # speed, mAP tests
-                    results, _, _ = test.test(opt.data,
-                                              batch_size=batch_size * 2,
-                                              imgsz=imgsz_test,
-                                              conf_thres=0.001,
-                                              iou_thres=0.7,
-                                              model=attempt_load(m, device).half(),
-                                              single_cls=opt.single_cls,
-                                              dataloader=testloader,
-                                              save_dir=save_dir,
-                                              save_json=True,
-                                              plots=False,
-                                              is_coco=is_coco)
-
-            # Strip optimizers
-            for f in last, best:
-                if f.exists():
-                    strip_optimizer(f)  # strip optimizers
-            if wandb_logger.wandb:  # Log the stripped model
-                wandb_logger.wandb.log_artifact(str(best if best.exists() else last), type='model',
-                                                name='run_' + wandb_logger.wandb_run.id + '_model',
-                                                aliases=['latest', 'best', 'stripped'])
-        wandb_logger.finish_run()
-    else:
-        dist.destroy_process_group()
+    print("End Training =====================================")
+    # if rank in [-1, 0]:
+    #     logger.info(f'{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.\n')
+    #     if plots:
+    #         plot_results(save_dir=save_dir)  # save as results.png
+    #         if wandb_logger.wandb:
+    #             files = ['results.png', 'confusion_matrix.png', *[f'{x}_curve.png' for x in ('F1', 'PR', 'P', 'R')]]
+    #             wandb_logger.log({"Results": [wandb_logger.wandb.Image(str(save_dir / f), caption=f) for f in files
+    #                                           if (save_dir / f).exists()]})
+    #
+    #     if not opt.evolve:
+    #         if is_coco:  # COCO dataset
+    #             for m in [last, best] if best.exists() else [last]:  # speed, mAP tests
+    #                 results, _, _ = test.test(opt.data,
+    #                                           batch_size=batch_size * 2,
+    #                                           imgsz=imgsz_test,
+    #                                           conf_thres=0.001,
+    #                                           iou_thres=0.7,
+    #                                           model=attempt_load(m, device).half(),
+    #                                           single_cls=opt.single_cls,
+    #                                           dataloader=testloader,
+    #                                           save_dir=save_dir,
+    #                                           save_json=True,
+    #                                           plots=False,
+    #                                           is_coco=is_coco)
+    #
+    #         # Strip optimizers
+    #         for f in last, best:
+    #             if f.exists():
+    #                 strip_optimizer(f)  # strip optimizers
+    #         if wandb_logger.wandb:  # Log the stripped model
+    #             wandb_logger.wandb.log_artifact(str(best if best.exists() else last), type='model',
+    #                                             name='run_' + wandb_logger.wandb_run.id + '_model',
+    #                                             aliases=['latest', 'best', 'stripped'])
+    #     wandb_logger.finish_run()
+    # else:
+    #     dist.destroy_process_group()
     torch.cuda.empty_cache()
     return results
 
 
 if __name__ == '__main__':
+    print("--------------------------  Training Main ------------------------------------------")
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolov5s.pt', help='initial weights path')
     parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
@@ -507,7 +524,10 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--fromScratch', type=int, default=1, help=' train without pre-trained model')
     parser.add_argument('--numChannels', type=int, default=3, help=' number of color channels')
-
+    parser.add_argument('--szX', type=int, default=3, help=' image width ')
+    parser.add_argument('--szY', type=int, default=3, help=' image height ')
+    parser.add_argument('--szZ', type=int, default=3, help=' image depth ')
+    parser.add_argument('--numPoints', type=int, default=2, help=' 2 for 2d, 3 for 3d')
 
     opt = parser.parse_args()
 
@@ -521,7 +541,7 @@ if __name__ == '__main__':
         check_requirements(exclude=('pycocotools', 'thop'))
 
     # Resume
-    wandb_run = check_wandb_resume(opt)
+    # wandb_run = check_wandb_resume(opt)
     if opt.resume and not wandb_run:  # resume an interrupted run
         ckpt = opt.resume if isinstance(opt.resume, str) else get_latest_run()  # specified or most recent path
         assert os.path.isfile(ckpt), 'ERROR: --resume checkpoint does not exist'
@@ -558,6 +578,7 @@ if __name__ == '__main__':
     # Train
     logger.info(opt)
     if not opt.evolve:
+        print("train no evolve ..................")
         tb_writer = None  # init loggers
         if opt.global_rank in [-1, 0]:
             prefix = colorstr('tensorboard: ')
@@ -567,6 +588,7 @@ if __name__ == '__main__':
 
     # Evolve hyperparameters (optional)
     else:
+        print("train with evolve ..................")
         # Hyperparameter evolution metadata (mutation scale 0-1, lower_limit, upper_limit)
         meta = {'lr0': (1, 1e-5, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
                 'lrf': (1, 0.01, 1.0),  # final OneCycleLR learning rate (lr0 * lrf)

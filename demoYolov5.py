@@ -1,3 +1,6 @@
+
+# ~/myGitLab/DNN_ImageRegistration/IA/YOLOv5/yolov5$ clear && time python3 demoYolov5.py
+
 ## !git clone https://github.com/ultralytics/yolov5  # clone repo
 # !git clone git@github.com:idhamari/yolov5.git
 # %cd yolov5
@@ -11,7 +14,7 @@
 import os, sys, time, torch
 from IPython.display import Image, clear_output  # to display images
 
-#os.chdir("yolov5")
+os.chdir("/home/ibr/myGitLab/DNN_ImageRegistration/IA/YOLOv5/yolov5")
 clear_output()
 print(f"Setup complete. Using torch {torch.__version__} ({torch.cuda.get_device_properties(0).name if torch.cuda.is_available() else 'CPU'})")
 
@@ -46,16 +49,18 @@ print(f"Setup complete. Using torch {torch.__version__} ({torch.cuda.get_device_
 # %pip install -q wandb
 #wandb.login()
 
-train2d = 0
+train2d = int(sys.argv[1])
 if train2d :
+    print("train 2D ............................")
     # #Train YOLOv5s on COCO128 for 3 epochs
-    os.system('python3 train.py --img 640 --batch 16 --epochs 3 --numChannels 3 --data coco128.yaml  --cfg "yolov5s.yaml" --weights yolov5s.pt --fromScratch 1 --cache --device 1')
+    os.system('python3 train.py --img 640 --batch 1 --epochs 3 --numChannels 3 --data coco128.yaml  --cfg "yolov5s.yaml" --weights yolov5s.pt --fromScratch 1 --cache --device 1 --workers 1 --numPoints 2')
 else:
+    print("train 3D ............................")
     # notes:
     #  69 3d volumes of 256,256,128: only 10 used
     #  69 txt files : only 10 used
     #  28 classes without background
     #  smallest approximate size: 80,70,20
-    os.system('python3 train.py  --epochs 3 --numChannels 1 --data data/spine3d/spine3d.yaml --cfg "yolov5s3D.yaml" --fromScratch 1 --cache --device 1')
+    os.system('python3 train.py  --epochs 3 --batch 1 --szX 256 --szY 256 --szZ 128 --numChannels 1 --data spine3d.yaml --cfg "yolov5s3D.yaml" --fromScratch 1 --cache --device 1 --workers 1 --numPoints 3')
 
 #
