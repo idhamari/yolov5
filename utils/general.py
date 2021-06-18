@@ -374,7 +374,7 @@ def xywh2xyxy(x):
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
 
-
+# 2d: normalized xywh to pixel xyxy format
 def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
     # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
     y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
@@ -382,8 +382,51 @@ def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
     y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
     y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
     y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
+    # print("-------------------------------")
+    # print("x   : ",x)         # matrix 8x4  each value in [0,1]
+    # print("w   : ",w)         # 640
+    # print("h   : ",h)         # 480
+    # print("padw : ",padw )    # 0.0
+    # print("padh : ",padh )    # 80.0
+    # print("y               : ")
+    # print(y)                  # matrix 8x4  each value in [w,h]
+    # print("-------------------------------")
+    # x: [
+    #    [0.47949     0.68877     0.95561      0.5955]
+    #    [0.73652     0.24719     0.49887     0.47642]
+    #    [0.63706    0.73294    0.49413    0.51058]
+    #    [0.33944      0.4189     0.67888      0.7815]
+    #    [0.64684    0.13255    0.11805    0.096937]
+    #    [0.77315      0.1298    0.090734    0.097229]
+    #    [0.6683    0.22691    0.13128    0.1469]
+    #    [0.64286    0.079219     0.14806     0.14806]]
+    #    w: 640.0
+    #    h: 480.0
+    #    padw: 0.0
+    #    padh: 80.0
+    #    y:
+    #    [[1.08      267.69      612.67      553.53]
+    #    [311.73       84.31      631.01      312.99]
+    #    [249.6    309.27    565.84    554.35]
+    #    [0.00030518       93.51      434.48      468.63]
+    #    [376.2    120.36    451.75    166.89]
+    #    [465.78      118.97      523.85      165.64]
+    #    [385.7    153.66    469.72    224.17]
+    #    [364.05       82.49      458.81      153.56]]
+    # -------------------------------
     return y
 
+# 3d:  normalized xywh to pixel xyxy format
+def xyzwhdn2xyzxyz(x, w=256, h=256, d=128, padw=0, padh=0, padd=0):
+    # Convert nx4 boxes from [x, y, w, h] normalized to [x1,y1,z1, x2,y2,z2] where xyz1= coronal_front:top-left, xyz2=coronal_back:bottom-right
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + padw  # top left x
+    y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
+    y[:, 2] = d * (x[:, 2] - x[:, 4] / 2) + padd  # top left z
+    y[:, 3] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
+    y[:, 4] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
+    y[:, 5] = h * (x[:, 2] + x[:, 4] / 2) + padd  # bottom right z
+    return y
 
 def xyn2xy(x, w=640, h=640, padw=0, padh=0):
     # Convert normalized segments into pixel segments, shape (n,2)

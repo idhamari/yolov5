@@ -22,7 +22,7 @@ from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm # progress bar
 
-from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
+from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy,xyzwhdn2xyzxyz, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
 from utils.torch_utils import torch_distributed_zero_first
 
@@ -617,9 +617,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if not 'nrrd' in path:
                 img, (h0, w0), (h, w) = load_image(self, index)
                 # Letterbox
-                shape = self.batch_shapes[
-                    self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                # print("shape : ",shape)# 640
                 img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                # print("ratio :", ratio) # (1.0,1.0)
+                # print("pad :", pad)     # (0.0,80.0)
                 shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
                 labels = self.labels[index].copy()
@@ -628,13 +630,18 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             else:
                 img, (h0, w0, d0), (h, w, d) = load_3d_image(self, index)
                 # Letterbox
-                shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-                pad = (0,0,0)
-                shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+                self.img_size = d0
+                shape = self.img_size  # final letterboxed shape
+                pad = (0.0,0.0,0.0)
+                ratio = (1.0,1.0,1.0)
+                # print("shape :", shape) # (1.0,1.0)
+                # print("pad :", pad)     # (0.0,80.0)
+
+                shapes = (h0, w0,d0), (h , w ,d), pad  # for COCO mAP rescaling
 
                 labels = self.labels[index].copy()
-                if labels.size:  # normalized xywh to pixel xyxy format
-                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+                if labels.size:  # normalized xyzwhd to pixel xyzxyz format
+                    labels[:, 1:] = xyzwhdn2xyzxyz(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 
         if self.augment:
             # Augment imagespace
@@ -672,13 +679,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
 
-        labels_out = torch.zeros((nL, 6))
+        if not 'nrrd' in path:
+           labels_out = torch.zeros((nL, 6))
+        else:
+           labels_out = torch.zeros((nL, 8))
+
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
 
-        # Convert
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-        img = np.ascontiguousarray(img)
+        if not 'nrrd' in path:
+            # Convert
+            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+            img = np.ascontiguousarray(img)
+        else:
+            img = np.ascontiguousarray(img)
 
         # print("img.shape : ", img.shape) # (3, 640, 640) # resized image to have iso size
         # print("labels_out.shape : ", labels_out.shape)   # torch.Size([8, 6]) 8 is the number of objects,  6 is: index, label,cx,cy,h,w
